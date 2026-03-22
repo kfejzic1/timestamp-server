@@ -31,6 +31,7 @@ def _build_ssl_context() -> ssl.SSLContext | bool:
     """Build mTLS SSL context for outbound requests to signers/aggregator."""
     try:
         ctx = ssl.create_default_context(cafile=str(CERT_DIR / "ca.crt"))
+        ctx.check_hostname = False
         ctx.load_cert_chain(
             certfile=str(CERT_DIR / "gateway.crt"),
             keyfile=str(CERT_DIR / "gateway.key"),
