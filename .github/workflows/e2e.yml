@@ -1,0 +1,41 @@
+name: End-to-End Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate TLS certificates
+        run: bash certs/generate.sh
+
+      - name: Build and start services
+        run: docker compose up --build -d
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install -r tests/requirements.txt
+
+      - name: Run end-to-end tests
+        run: pytest tests/e2e/ -v --tb=short --timeout=300
+
+      - name: Print service logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+
+      - name: Tear down services
+        if: always()
+        run: docker compose down --volumes
