@@ -1,0 +1,45 @@
+services:
+  gateway:
+    build: ./gateway
+    ports:
+      - "8000:8000"
+    environment:
+      THRESHOLD: "3"
+      MAX_SIGNERS: "5"
+      AGGREGATOR_URL: "https://aggregator:8082"
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      - aggregator
+    networks:
+      - frost-net
+
+  aggregator:
+    build: ./aggregator
+    environment:
+      PORT: "8082"
+    volumes:
+      - ./certs:/certs:ro
+    networks:
+      - frost-net
+
+  signer:
+    build: ./signer
+    deploy:
+      replicas: 5
+    environment:
+      GATEWAY_URL: "http://gateway:8000"
+      SIGNER_PORT: "8081"
+      ENCRYPTION_KEY: "0a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f"
+      THRESHOLD: "3"
+      MAX_SIGNERS: "5"
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      - gateway
+    networks:
+      - frost-net
+
+networks:
+  frost-net:
+    driver: bridge
