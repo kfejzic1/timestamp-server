@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from models import TimestampToken, ClusterStatus
 from orchestrator import Orchestrator
@@ -35,6 +35,17 @@ orchestrator = Orchestrator(
 )
 
 
+def _validate_sha256_hex(v: str) -> str:
+    """Validate that v is a 64-character lowercase hex string (SHA-256 digest)."""
+    if len(v) != 64:
+        raise ValueError("document_hash must be exactly 64 hex characters (SHA-256)")
+    try:
+        bytes.fromhex(v)
+    except ValueError:
+        raise ValueError("document_hash must be a valid hexadecimal string")
+    return v
+
+
 class RegisterRequest(BaseModel):
     callback_url: str
     x25519_pub_key: str
@@ -47,10 +58,20 @@ class RegisterResponse(BaseModel):
 class TimestampRequest(BaseModel):
     document_hash: str
 
+    @field_validator("document_hash")
+    @classmethod
+    def validate_document_hash(cls, v: str) -> str:
+        return _validate_sha256_hex(v)
+
 
 class VerifyRequest(BaseModel):
     document_hash: str
     token: TimestampToken
+
+    @field_validator("document_hash")
+    @classmethod
+    def validate_document_hash(cls, v: str) -> str:
+        return _validate_sha256_hex(v)
 
 
 # --- Registration ---
