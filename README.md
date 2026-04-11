@@ -47,36 +47,47 @@ All cryptographic operations use the [`github.com/bytemare/frost`](https://githu
 - **Encrypted key persistence:** Key shares are encrypted with AES-256-GCM before writing to disk.
 - **mTLS ready:** Inter-service communication supports mutual TLS authentication.
 - **Canonical message format:** A deterministic length-prefixed binary encoding ensures signers and the gateway agree on the exact bytes being signed.
+- **Input validation:** The gateway enforces that `document_hash` is exactly 64 hex characters (a valid SHA-256 digest) before accepting any request.
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) v2+
-- Bash shell (for certificate generation script)
+- Bash shell or PowerShell (for certificate generation)
 
 ## Quick Start
 
-### 1. Generate mTLS Certificates (Optional)
+### 1. Generate mTLS Certificates
+
+Inter-service communication uses mutual TLS. Generate the CA and service certificates before starting the cluster.
+
+**Linux / macOS / Git Bash:**
 
 ```bash
-cd certs
-chmod +x generate.sh
-./generate.sh
-cd ..
+bash certs/generate.sh
 ```
 
-This creates a self-signed CA and service certificates. If you skip this step, the services will fall back to plain HTTP.
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File certs\generate.ps1
+```
+
+> The PowerShell script automatically uses the OpenSSL bundled with Git for Windows
+> (`C:\Program Files\Git\usr\bin\openssl.exe`) to avoid conflicts with other OpenSSL
+> installations (e.g. PostgreSQL). If Git for Windows is not installed, install it from
+> [git-scm.com](https://git-scm.com/).
+
+If you skip this step the services fall back to plain HTTP between containers.
 
 ### 2. Start the Cluster
 
 ```bash
-# Default: 5 signer nodes
+# Default: 5 signer nodes, threshold 3
 docker compose up --build
 
-# Or specify a custom number of signers:
+# Custom signer count (also update MAX_SIGNERS in docker-compose.yml):
 docker compose up --build --scale signer=7
 ```
-
-If changing the number of signers, update the `MAX_SIGNERS` environment variable in `docker-compose.yml` to match.
 
 ### 3. Wait for Registration
 
@@ -172,6 +183,110 @@ Verification re-computes the canonical message from the token fields and checks 
 | `/api/verify` | POST | Verify a timestamp token |
 | `/api/status` | GET | Cluster health and DKG status |
 
+Interactive API documentation is available at [http://localhost:8000/docs](http://localhost:8000/docs) while the cluster is running.
+
+## Testing
+
+The project includes an end-to-end test suite that exercises the full protocol against a live Docker Compose cluster.
+
+### Test Structure
+
+```
+tests/
+├── requirements.txt          # pytest, pytest-timeout, httpx
+└── e2e/
+    ├── conftest.py           # Session fixtures: gateway client, cluster readiness
+    ├── test_timestamp_flow.py   # Happy-path and token integrity tests
+    └── test_input_validation.py # Malformed input and error-code tests
+```
+
+### Running the Tests Locally
+
+**Step 1 — Generate certificates and start the cluster** (if not already running):
+
+```bash
+# Linux / macOS / Git Bash
+bash certs/generate.sh && docker compose up --build -d
+
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File certs\generate.ps1
+docker compose up --build -d
+```
+
+**Step 2 — Create a Python virtual environment and install test dependencies:**
+
+```bash
+python -m venv .venv
+
+# Linux / macOS / Git Bash
+source .venv/bin/activate
+
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+
+pip install -r tests/requirements.txt
+```
+
+**Step 3 — Run the full test suite:**
+
+```bash
+pytest tests/e2e/ -v
+```
+
+The fixtures handle all waiting automatically: they poll until all signers have registered, trigger DKG, and wait for it to complete before any signing tests execute. Total wall-clock time is typically under 3 minutes on the first run (dominated by `docker compose --build`).
+
+**Run a single file:**
+
+```bash
+pytest tests/e2e/test_input_validation.py -v
+pytest tests/e2e/test_timestamp_flow.py -v
+```
+
+**Step 4 — Tear down when done:**
+
+```bash
+docker compose down --volumes
+```
+
+### Rebuilding After Code Changes
+
+If you modify gateway source code, rebuild its container before re-running tests:
+
+```bash
+docker compose up --build -d gateway
+pytest tests/e2e/ -v
+```
+
+> Rebuilding the gateway resets in-memory state (signers, DKG). The `cluster_ready`
+> fixture detects this and re-runs DKG automatically.
+
+### CI
+
+Tests run automatically on every push and pull request to `main`/`master` via GitHub Actions (`.github/workflows/e2e.yml`). The workflow:
+
+1. Generates TLS certificates with `bash certs/generate.sh`
+2. Builds and starts all containers with `docker compose up --build -d`
+3. Installs test dependencies and runs `pytest tests/e2e/ -v`
+4. Prints container logs on failure for debugging
+5. Always tears down with `docker compose down --volumes`
+
+### What Is Tested
+
+| Category | Tests |
+|----------|-------|
+| **Cluster readiness** | Gateway reachable, all signers register, DKG completes, status fields correct |
+| **DKG idempotency** | Calling `/api/dkg/start` again returns `already_complete` |
+| **Token creation** | All required fields present, correct types and values |
+| **Token integrity** | Timestamp is valid ISO-8601, serial is a UUID, participant IDs in range, threshold matches cluster |
+| **Verification key stability** | All tokens share the same group key matching `/api/status` |
+| **Verification** | Valid tokens pass, tampered hash/signature/timestamp field all fail |
+| **Independence** | Multiple tokens have unique serials; same document twice gives two distinct valid tokens |
+| **Concurrency** | 5 parallel timestamp requests all succeed with unique serials |
+| **Input validation** | Non-hex, wrong-length, empty, null, and wrong-type hashes all return 4xx/5xx |
+| **Token field validation** | Missing required token fields return 422; wrong field types return 422 |
+| **Frontend** | `/` and `/static/index.html` serve HTML |
+| **OpenAPI** | Schema lists all endpoints; `/docs` UI is reachable |
+
 ## Canonical Message Format
 
 The signed message uses a deterministic length-prefixed binary encoding (big-endian) to ensure byte-identical output in Go and Python:
@@ -211,9 +326,20 @@ Expected canonical message (hex):
 ```
 timestamp-server/
 ├── docker-compose.yml          # Orchestrates all services
+├── .gitattributes              # Enforces LF line endings for shell scripts
 ├── README.md
 ├── certs/
-│   └── generate.sh             # mTLS CA and certificate generation
+│   ├── generate.sh             # mTLS certificate generation (Linux/macOS)
+│   └── generate.ps1            # mTLS certificate generation (Windows PowerShell)
+├── tests/
+│   ├── requirements.txt        # Test dependencies (pytest, httpx)
+│   └── e2e/
+│       ├── conftest.py         # Shared fixtures (gateway client, cluster readiness)
+│       ├── test_timestamp_flow.py   # Happy-path and integrity tests
+│       └── test_input_validation.py # Input validation and error-code tests
+├── .github/
+│   └── workflows/
+│       └── e2e.yml             # GitHub Actions CI workflow
 ├── signer/                     # Go signer microservice
 │   ├── Dockerfile
 │   ├── go.mod
@@ -232,7 +358,7 @@ timestamp-server/
 └── gateway/                    # Python FastAPI gateway
     ├── Dockerfile
     ├── requirements.txt
-    ├── main.py                 # FastAPI app, routes
+    ├── main.py                 # FastAPI app, routes, input validation
     ├── models.py               # Pydantic models, token schema, canonical encoding
     ├── session.py              # UUID-keyed signing session state machine
     ├── orchestrator.py         # DKG + signing round coordination
