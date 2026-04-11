@@ -1,2 +1,7 @@
 certs/*.crt
 certs/*.key
+
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
