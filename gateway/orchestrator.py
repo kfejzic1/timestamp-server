@@ -327,7 +327,18 @@ class Orchestrator:
     async def verify_token(
         self, document_hash: str, token: TimestampToken
     ) -> dict[str, Any]:
-        doc_hash_bytes = bytes.fromhex(document_hash)
+        # Bind the token to the document: token.document_hash is otherwise a
+        # decorative field and tampering it would go undetected by the
+        # signature check, which only covers the canonical message.
+        if document_hash.lower() != token.document_hash.lower():
+            return {
+                "valid": False,
+                "detail": "document hash does not match token",
+                "document_hash": document_hash,
+                "timestamp": token.timestamp,
+            }
+
+        doc_hash_bytes = bytes.fromhex(token.document_hash)
         canonical_msg = build_canonical_message(
             CIPHERSUITE_ID,
             token.hash_algorithm,
