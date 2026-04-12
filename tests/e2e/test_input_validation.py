@@ -132,8 +132,8 @@ def test_verify_rejects_non_hex_signature(
     cluster_ready: None, gateway: httpx.Client
 ) -> None:
     """POST /api/verify with a non-hex signature string returns an error."""
-    doc_hash = _sha256("non-hex-sig")
     token = _good_token(gateway)
+    doc_hash = token["document_hash"]
     token["signature"] = "not-valid-hex!"
 
     r = gateway.post("/api/verify", json={"document_hash": doc_hash, "token": token})
